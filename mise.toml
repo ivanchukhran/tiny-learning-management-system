@@ -1,0 +1,10 @@
+[tools]
+python = "latest"
+uv = "latest"
+
+[env]
+# Colima: the Python docker client (used by testcontainers) ignores docker
+# contexts and defaults to /var/run/docker.sock, which doesn't exist here.
+# Point it at Colima's socket, and tell Ryuk the in-VM socket path.
+DOCKER_HOST = "unix://{{env.HOME}}/.colima/default/docker.sock"
+TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE = "/var/run/docker.sock"
