@@ -1,5 +1,6 @@
-from .user import UserCreate
+from .user import UserCreateDb, UserUpdateDb
 
 __all__ = [
-    "UserCreate",
+    "UserCreateDb",
+    "UserUpdateDb",
 ]

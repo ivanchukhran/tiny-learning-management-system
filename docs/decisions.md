@@ -345,14 +345,50 @@ if swap-ability/mocking is actually needed.
   global filter (ADR-007) hides soft-deleted rows from normal reads automatically;
   `include_deleted=True` is the escape hatch for restore flows.
 
+**Query/mutation shape (as implemented for `user`):**
+- **Predicate over kwargs.** Read/update/delete functions accept
+  `*criteria: ColumnExpressionArgument[bool]` and splat them into `.where()`. Callers pass
+  real column expressions (`User.id == x`, `User.email == "..."`, `User.last_name == "..."`).
+  Chosen over `**kwargs` equality filters because predicates give the full expression
+  language (comparisons, `IN`, `OR`, `LIKE`) for free. Acceptable leak of `User.*` into
+  callers because callers are in-package/`api`, not an external boundary.
+- **Single vs. bulk split** (decided per-operation):
+  - `get_user` → `scalar_one_or_none()` (`User | None`; raises `MultipleResultsFound` if the
+    predicate is non-unique — pins the "caller asserts uniqueness" contract). `list_users` →
+    `Sequence[User]` (empty → `[]`, never `None`).
+  - `update_user` is **load-then-mutate**: `get_user` → `setattr` the
+    `model_dump(exclude_unset=True)` fields → `flush` → return the fresh object (or `None`
+    if no match). `update_users` is **bulk** `update().values()` → returns `rowcount`.
+  - `delete_user` / `restore_user` are predicate-bulk → return `rowcount`.
+- **`update_user` must `refresh(["updated_at"])` after flush.** `updated_at`'s `onupdate`
+  value is computed server-side, so the attribute is *expired* post-flush; reading it without
+  a refresh triggers a lazy `SELECT` = async IO outside `await` → `MissingGreenlet`. (INSERT
+  needs no such refresh — server defaults return via `RETURNING`; UPDATE `onupdate` does not.)
+- **`restore` requires `include_deleted=True`.** A plain bulk update setting `deleted_at=None`
+  would get `AND deleted_at IS NULL` appended by the global filter and match **zero** deleted
+  rows. `restore_user` sets `.execution_options(include_deleted=True)` to bypass it. This is
+  why restore can't be a one-liner symmetric with delete.
+- **Empty bulk update is a timestamp-only no-op, not an error.** An all-unset `UserUpdateDb`
+  dumps to `{}`, but the `update(User)` *construct* still emits `SET updated_at=now()`
+  because it honors the column's `onupdate` (unlike a hand-written raw SQL string — see the
+  mixins note). So `update_users(..., UserUpdateDb(), ...)` matches rows, bumps the timestamp,
+  changes no caller field, and returns the match count. No empty-`SET` error → no guard needed.
+
+**Update DTO:** partial updates take `UserUpdateDb` — same fields as `UserCreateDb` but all
+`Optional` with `None` defaults. `model_dump(exclude_unset=True)` yields only the fields the
+caller explicitly set, so untouched columns are preserved (not nulled). Trade-off: can't
+distinguish "set to NULL" from "leave alone", which is fine because no `User` column is
+nullable; revisit if a nullable, clearable column is added.
+
 **Boundary:** business rules (hashing, validation, authorization) live one layer up, in
 `api`'s service/endpoint layer. `database` stays pure persistence.
 
 **Input DTOs:** write operations take a Pydantic **persistence DTO** that lives in the
-`database` package (`database/schemas/`), e.g. `UserCreate(first_name, last_name, email,
+`database` package (`database/schemas/`), e.g. `UserCreateDb(first_name, last_name, email,
 password_hash)`. This DTO carries already-derived values (`password_hash`, plain `str`
 email — **not** `EmailStr`); format validation and hashing happen in `api`'s *request*
-model, which is a separate schema. Keeping the persistence DTO in `database` avoids
+model (a separate schema, e.g. `UserCreate`). The `Db` suffix distinguishes the persistence
+DTO from the API contract model and avoids the name collision between the two layers. Keeping the persistence DTO in `database` avoids
 inverting the dependency (api → database, never the reverse) and keeps `email-validator`
 out of the `database` package. Implementation pattern:
 `User(**data.model_dump())` → `session.add` → `await session.flush()` (no commit).
