@@ -100,6 +100,27 @@ async def test_list_users_empty_returns_empty_sequence(session):
     assert users == []
 
 
+async def test_list_users_respects_order_by_override(session):
+    # Insertion (id) order is c, a, b; an explicit order_by=email re-sorts to a, b, c.
+    base = dict(first_name="Ada", last_name="Smith", password_hash="hashed-value")
+    for email in ("c@example.com", "a@example.com", "b@example.com"):
+        await create_user(session, UserCreateDb(email=email, **base))
+
+    default_order = await list_users(session)
+    by_email = await list_users(session, order_by=User.email)
+
+    assert [u.email for u in default_order] == [
+        "c@example.com",
+        "a@example.com",
+        "b@example.com",
+    ]
+    assert [u.email for u in by_email] == [
+        "a@example.com",
+        "b@example.com",
+        "c@example.com",
+    ]
+
+
 async def test_update_user_partial_leaves_untouched_fields(session):
     base = dict(
         first_name="Ada",

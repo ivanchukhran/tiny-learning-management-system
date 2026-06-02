@@ -2,7 +2,7 @@ import asyncio
 from logging.config import fileConfig
 
 from database.base import Base
-from database.config import settings
+from database.config import get_settings
 from database.models import *  # noqa: F403  # pyright: ignore[reportWildcardImportFromLibrary]
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -30,7 +30,7 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
 
 
 def run_migrations_offline() -> None:

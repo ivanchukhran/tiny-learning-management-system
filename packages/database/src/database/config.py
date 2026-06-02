@@ -20,6 +20,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings():
     return Settings()  # pyright: ignore
-
-
-settings = get_settings()

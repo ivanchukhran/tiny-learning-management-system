@@ -1,3 +1,6 @@
+from collections.abc import Sequence
+from typing import Any
+
 from sqlalchemy import ColumnExpressionArgument, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +23,20 @@ async def get_user(
     return result.scalar_one_or_none()
 
 
-async def list_users(session: AsyncSession, *criteria: ColumnExpressionArgument[bool]):
-    statement = select(User).where(*criteria)
+async def list_users(
+    session: AsyncSession,
+    *criteria: ColumnExpressionArgument[bool],
+    order_by: ColumnExpressionArgument[Any] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> Sequence[User]:
+    # Default to the PK so pagination has a stable sort; without any ordering
+    # LIMIT/OFFSET pages can overlap or skip rows across requests.
+    if order_by is None:
+        order_by = User.id
+    statement = (
+        select(User).where(*criteria).order_by(order_by).limit(limit).offset(offset)
+    )
     result = await session.execute(statement)
     return result.scalars().all()
 
