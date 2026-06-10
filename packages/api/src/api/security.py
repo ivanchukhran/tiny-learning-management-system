@@ -1,3 +1,6 @@
+import hashlib
+import secrets
+
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
@@ -18,3 +21,16 @@ def verify_password(raw_password: str, password_hash: str) -> bool:
         return _hasher.verify(password_hash, raw_password)
     except VerifyMismatchError:
         return False
+
+
+def generate_session_token() -> str:
+    """A 256-bit CSPRNG token. This raw value goes into the cookie and is never
+    stored; only its digest (hash_token) is persisted."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    """Deterministic SHA-256 hex digest of a session token. Deterministic (unlike
+    argon2) because the token *is* the DB lookup key; fast/unsalted is safe
+    because the token already carries 256 bits of entropy."""
+    return hashlib.sha256(token.encode()).hexdigest()

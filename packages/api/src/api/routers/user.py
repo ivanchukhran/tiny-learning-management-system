@@ -2,6 +2,7 @@ from enum import Enum
 
 from database.models import User
 from database.repositories import create_user, get_user
+from database.repositories import delete_user_sessions
 from database.repositories.user import (
     delete_user,
     list_users,
@@ -104,6 +105,9 @@ async def update_password_endpoint(
     user = await update_user(session, dto, User.id == user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    # A password change invalidates every existing session for the user (ADR-019):
+    # forces re-login everywhere, locking out anyone holding a stolen session.
+    await delete_user_sessions(session, user_id)
     await session.commit()
 
 

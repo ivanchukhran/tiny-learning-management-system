@@ -395,6 +395,98 @@ out of the `database` package. Implementation pattern:
 
 ---
 
+## ADR-019: Authentication — server-side sessions in an httpOnly cookie
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:** Authentication is **session-based** (server-side state), not token/JWT.
+The session credential travels in an **`httpOnly`, `Secure`, `SameSite=Lax` cookie**,
+with the SPA and API served behind a **single origin via a reverse proxy**.
+
+**Rationale (why sessions over JWT for *this* project):**
+- **Frontend undecided (SPA vs htmx).** A cookie works for both; a bearer-header scheme
+  silently commits to the SPA. Cookie transport keeps the frontend question open.
+- **Instant revocation matters.** Accounts are admin-managed and users are soft-deleted;
+  "disable a user → their logins stop now" is a one-row delete with sessions. JWT would
+  need a server-side blocklist — i.e. server state rebuilt badly.
+- **Per-course authz is mutable and granular (ADR-008).** Almost every request hits the DB
+  to authorize anyway, so the JWT "no server lookup" benefit evaporates.
+- **No JWT-shaped problem.** No third-party API consumers, no fleet of services, no
+  cookie-less mobile client — the scenarios where JWT pays off are all absent.
+- **The hybrid tell.** Reaching for refresh tokens reintroduces a server store; skip the
+  detour and store sessions directly.
+
+**Same-origin-via-proxy consequence:** `SameSite=Lax` is sufficient CSRF defense **because
+mutations use POST/PATCH/DELETE** (Lax still sends the cookie on top-level GET navigations,
+so no state-changing GETs). No separate CSRF token needed; no CORS / `credentials` dance.
+True cross-origin would have forced `SameSite=None` + CORS-credentials + CSRF tokens — the
+proxy avoids all three.
+
+**Session model (`sessions` table):**
+- `id` (BIGINT identity, per ADR-010), `user_id` (FK → users), `hash`, plus the two
+  expiry **event** timestamps below.
+- **`hash` stores a digest of the token, not the token.** The raw token is a CSPRNG value
+  (≥256 bits) that lives only in the cookie. We store a **deterministic, fast** hash
+  (SHA-256, unsalted) — *opposite* of `password_hash`'s argon2. Reasoning: the token is
+  the lookup key (no "username" to find the row by), so the hash must be deterministic to
+  support `WHERE hash = ?`; and a 256-bit random token is unguessable, so a slow/salted
+  hash defends against nothing here. Hashing-at-rest means a DB leak doesn't hand out live
+  sessions. `hash` is unique + indexed (the per-request lookup key).
+- **No `SoftDeleteMixin`.** Logout and expiry are **hard deletes**; the global soft-delete
+  filter must not touch this table.
+
+**Expiry — hybrid (idle timeout under an absolute ceiling), stored as events:**
+- Two facts stored as **events**, not deadlines: `created_at` (absolute ceiling anchor) and
+  `last_seen_at` (idle anchor). Windows are app constants (`IDLE_WINDOW`, `MAX_LIFETIME`).
+  Events chosen over stored deadlines so the windows can be **retuned globally** later
+  (mirrors the events-vs-state reasoning in ADR-011). Trade-off accepted: validity uses
+  interval math instead of plain column comparisons.
+- A session is valid iff **both** `now() < last_seen_at + IDLE_WINDOW` **and**
+  `now() < created_at + MAX_LIFETIME`. Keeping them as two **independent** conditions means
+  the idle bump never needs clamping to the ceiling — the `AND` does it for free.
+- **Why hybrid:** idle timeout bounds the *abandoned shared-computer* session; the absolute
+  ceiling bounds the *stolen-but-kept-alive* session (pure sliding would let a hijacked,
+  pinged token live forever). Each defends a threat the other leaves open.
+- **Lazy bump:** `last_seen_at` is pushed forward only when it is more than a threshold
+  stale, not on every request, to avoid turning a read-heavy LMS's every authed GET into a
+  write. The ceiling (`created_at`) is never touched.
+
+**Validation path (`get_current_user`, an `api` dependency):**
+- read cookie → **hash it in the `api` layer** → repo looks the row up by `hash`, **joined
+  to `User`** so the soft-delete filter rejects deleted users' sessions automatically →
+  apply the two validity conditions → return the user or **401**.
+- Repos stay pure persistence (ADR-018): they receive the **hash**, never the raw token,
+  and never hash anything themselves.
+
+**401 vs 403:** `get_current_user` failures (no cookie, bad hash, expired, deleted user) are
+**401** (unauthenticated). Per-course permission failures are **403** (authenticated but
+forbidden) and live in a *separate* authz dependency — not in `get_current_user`.
+
+**Lifecycle (`api` layer):**
+- **login:** `verify_password` (ADR-017) → mint token → insert session → `Set-Cookie`.
+- **logout:** delete the one session row + clear cookie.
+- **log out everywhere / password change:** delete *all* the user's session rows — the
+  same primitive. ADR note: `update_password_endpoint` should drop the user's other
+  sessions (currently it does not — **Open**, to wire when sessions land).
+
+**DB is authoritative for expiry.** The cookie's `Max-Age` is only a browser hint; the
+server enforces validity from the row. A cookie claiming validity past the DB's expiry loses.
+
+**Open sub-questions (deliberately deferred):**
+- Long quiet activity (e.g. reading an exam question for 35 min) trips the idle timeout —
+  needs a **heartbeat** from the client or a window sized around exam behavior (which
+  weakens the abandoned-computer defense). Tension unresolved.
+- **Exam integrity must not depend on session liveness.** In-progress attempt state must
+  live server-side and be resumable after re-login; sessions dying (crash, ceiling, admin)
+  must not lose work. This is an *exam-attempt* modeling concern, not a session concern.
+- `IDLE_WINDOW` / `MAX_LIFETIME` concrete values — **Open.**
+- Where session constants live (`api/constants.py` vs a new auth module) — **Open.**
+- Login brute-force throttle/lockout — **Open** (argon2 slows offline cracking, nothing
+  yet rate-limits online guessing).
+- Reaping expired rows (a row is prunable once *either* deadline passes) — **Open.**
+
+---
+
 ## Cross-cutting mixins (current state — as implemented)
 
 `packages/database/src/database/models/mixins.py` contains both mixins, in 2.0
