@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_session
 from api.schemas.user import PasswordUpdate, UserCreate, UserRead, UserUpdate
-from api.security import hash_password
+from core.security import hash_password
 
 router = APIRouter()
 

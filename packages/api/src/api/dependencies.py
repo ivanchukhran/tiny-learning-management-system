@@ -13,7 +13,7 @@ from api.constants import (
     SESSION_IDLE_WINDOW,
     SESSION_MAX_LIFETIME,
 )
-from api.security import hash_token
+from core.security import hash_token
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

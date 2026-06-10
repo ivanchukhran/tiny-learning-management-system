@@ -11,11 +11,12 @@ dependencies = [
     "fastapi[standard]>=0.136.3",
     "pydantic[email]>=2.13.4",
     "database",
-    "argon2-cffi>=25.1.0",
+    "core",
 ]
 
 [tool.uv.sources]
 database = { workspace = true }
+core = { workspace = true }
 
 [project.scripts]
 api = "api:main"

@@ -12,7 +12,7 @@ from api.constants import SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME
 from api.dependencies import get_current_user, get_session
 from api.schemas.auth import LoginRequest
 from api.schemas.user import UserRead
-from api.security import (
+from core.security import (
     generate_session_token,
     hash_password,
     hash_token,
