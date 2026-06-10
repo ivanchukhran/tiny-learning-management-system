@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login · tiny-lms</title>
+    <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Login</h1>
+
+      <section>
+        <h2>Create account</h2>
+        <form hx-post="/register" hx-target="#register-result" hx-swap="innerHTML">
+          <input name="first_name" placeholder="First name" required />
+          <input name="last_name" placeholder="Last name" required />
+          <input name="email" type="email" placeholder="Email" required />
+          <input name="password" type="password" placeholder="Password" required />
+          <button type="submit">Create account</button>
+        </form>
+        <div id="register-result"></div>
+      </section>
+    </main>
+  </body>
+</html>
