@@ -9,4 +9,14 @@ async def test_login_page_renders():
 
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "<h1>Login</h1>" in resp.text
+    assert "<h1>Sign in</h1>" in resp.text
+
+
+async def test_register_page_renders():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/register")
+
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "<h1>Create account</h1>" in resp.text
