@@ -1,7 +1,8 @@
-"""API-layer constants.
+"""Shared auth/session constants.
 
 Password policy lives here, not in `database`: the DB stores `password_hash`
 as `Text` (no length), so these bounds are purely a request-validation concern.
+Kept in `core` so both `api` and `web` apply the same policy without drift.
 """
 
 from datetime import timedelta

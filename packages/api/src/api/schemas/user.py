@@ -3,7 +3,7 @@ from datetime import datetime
 from database.constants import FIRST_NAME_MAX_LENGTH, LAST_NAME_MAX_LENGTH
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from api.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
+from core.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 
 
 class UserBase(BaseModel):
