@@ -14,6 +14,11 @@ from web.templates import templates
 router = APIRouter()
 
 
+@router.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "register.html")
+
+
 @router.post("/register", response_class=HTMLResponse)
 async def register(
     request: Request,

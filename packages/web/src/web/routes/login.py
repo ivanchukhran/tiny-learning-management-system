@@ -18,8 +18,6 @@ from web.templates import templates
 
 router = APIRouter()
 
-# Precomputed hash to verify against when the email is unknown, so login takes
-# the same time whether or not the account exists (no enumeration oracle).
 _DUMMY_HASH = hash_password("dummy-password-for-timing")
 
 
@@ -33,6 +31,11 @@ def _set_session_cookie(response: Response, token: str) -> None:
         samesite="lax",
         path="/",
     )
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "login.html")
 
 
 @router.post("/login", response_class=HTMLResponse)
