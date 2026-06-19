@@ -31,6 +31,12 @@ def upgrade() -> None:
         sa.Column("last_name", sa.String(length=100), nullable=False),
         sa.Column("email", sa.String(length=255), nullable=False),
         sa.Column("password_hash", sa.Text(), nullable=False),
+        sa.Column(
+            "is_admin",
+            sa.Boolean(),
+            server_default=sa.false(),
+            nullable=False,
+        ),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",

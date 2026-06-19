@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Identity, String, Text
+from sqlalchemy import BigInteger, Boolean, Identity, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
@@ -18,3 +18,6 @@ class User(SoftDeleteMixin, TimestampMixin, Base):
     last_name: Mapped[str] = mapped_column(String(LAST_NAME_MAX_LENGTH))
     email: Mapped[str] = mapped_column(String(EMAIL_MAX_LENGTH), unique=True)
     password_hash: Mapped[str] = mapped_column(Text)
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, server_default=false(), default=False
+    )
