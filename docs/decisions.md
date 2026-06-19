@@ -42,7 +42,8 @@ No extra schema.
 
 ## ADR-003: Two distinct user↔course relationships
 
-**Status:** Accepted
+**Status:** ~~Accepted~~ · **Superseded by ADR-021** — unified into a single
+`course_memberships` link so one permission system covers all participants.
 
 **Decision:** Separate "authority over a course" from "consumption of a course":
 - `course_memberships` — who can teach/manage a course, and their role there.
@@ -134,7 +135,8 @@ initial version; preserves data tied to submissions/grades.
 
 ## ADR-008: Per-course roles
 
-**Status:** Accepted
+**Status:** Accepted (per-course scoping) · **storage superseded by ADR-021/ADR-022** —
+`role` moves from an inline column to a `role_id` FK into a `roles` table.
 
 **Decision:** Roles are scoped per course, stored on `course_memberships`
 (`user_id`, `course_id`, `role`). A user can be an instructor in one course and a student
@@ -522,6 +524,244 @@ not, regenerate or hand-edit before running `upgrade`.
 
 ---
 
+## ADR-020: Authorization — two-level (global admin + per-course roles)
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:** Two independent authority levels:
+- **Global:** `users.is_admin` (boolean) — absolute platform access; short-circuits every
+  authorization check.
+- **Per-course:** a role on the user's course membership (ADR-021) drives a permission set
+  (ADR-022).
+
+The two are orthogonal. Admin is **not** "the top course role" — it bypasses the per-course
+system entirely, and admins hold no `course_memberships` rows.
+
+**Rationale (user):** Admin is platform-wide and binary; per-course authority is scoped and
+granular. Folding them into one enum/role would force every per-course check to special-case
+the global case and leak admin into the membership table. A boolean + a short-circuit keeps
+them cleanly separate.
+
+**Implications:** `may()` (ADR-024) tests `is_admin` first and returns early. Admins need no
+membership to act on any course.
+
+**Open:** if a second global role ever appears (read-only support, billing), `is_admin: bool`
+graduates to a `platform_role` field — deferred until a concrete second role exists (YAGNI).
+
+---
+
+## ADR-021: Unified course-membership link (supersedes ADR-003, storage of ADR-008)
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:** A single link table `course_memberships(id, user_id, course_id, role_id)`
+represents **every** user↔course relationship. `role_id` is an FK to `roles` (ADR-022), not
+an inline enum column.
+- Replaces ADR-003's split (`course_memberships` for authority + `enrollments` for students)
+  with one table whose `role` distinguishes `student` / `instructor` / future roles.
+- Replaces ADR-008's role-as-column with role-as-FK.
+- `unique(user_id, course_id)` — one role per user per course.
+
+**Rationale (user):** Unify so a single permission system (defaults + per-user overrides,
+ADR-022) covers *all* participants. "A student who may post news" becomes a per-user override
+on their membership — impossible if students lived in a separate, override-less table. The
+simplicity of one authorization path outweighed ADR-003's authority/consumption separation.
+
+**Implications:**
+- Co-teaching (ADR-002) still falls out for free: multiple memberships with `role=instructor`.
+- The design-chat term "member" is recorded as the **`student`** role, matching existing
+  vocabulary (ADR-003/004).
+- **Progress/enrollment state** (ADR-004, ADR-011) was framed as living on `enrollments`.
+  With that table gone, per-user progress/completion/grades must attach elsewhere — columns
+  or a related table keyed off `course_memberships.id`, or a dedicated `enrollment_state`
+  table. ADR-004's *materialization* intent still holds; only its host table changes.
+  **Open sub-question** — not resolved here.
+
+---
+
+## ADR-022: Per-course permissions as data — role defaults + per-user grant/deny overrides
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:** RBAC stored as data ("Option C"), resolved on read:
+- `roles(id, name)` — controlled vocabulary (ADR-023).
+- `permissions(id, code)` — catalog of actions (`read_content`, `write_content`,
+  `delete_content`, `enroll_members`, `assign_instructors`, …).
+- `role_permissions(id, role_id, permission_id)` — per-role **defaults**;
+  `unique(role_id, permission_id)`.
+- `course_membership_permissions(id, course_membership_id, permission_id, grant: bool)` —
+  per-user **overrides** on a membership; `grant=true` adds, `grant=false` revokes;
+  `unique(course_membership_id, permission_id)`.
+
+**Effective permissions** = role defaults, then overrides layered on top.
+
+**Precedence:** an override always wins over the role default for that permission — an explicit
+`grant=false` revokes a default-granted action (deny-wins relative to the default).
+
+**Rejected alternatives:**
+- **A — boolean column per action on the membership.** Every new action = a schema migration
+  (column-per-verb tax); defaults copied per row → drift when a role's meaning changes.
+- **B — nullable boolean columns (tri-state).** Solves drift but keeps the column-per-action
+  migration tax once the action set grows (it will).
+
+C keeps defaults **live** (change a `role_permissions` row → all memberships of that role
+follow, no drift) and adds actions as **rows, not columns**.
+
+**Consequences:**
+- Every `may()` call does a small merge (defaults ∪/∖ overrides), not a single column read —
+  accepted cost (see ADR-024 performance note).
+- `unique(course_membership_id, permission_id)` prevents a contradictory grant+deny pair for
+  the same cell.
+
+---
+
+## ADR-023: Permission-data ownership — defaults seeded (code-owned), overrides runtime
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:**
+- `roles`, `permissions`, and `role_permissions` (the **defaults**) are **code-owned**:
+  seeded and changed only via Alembic migrations. Changing a role's default capability is a
+  deploy.
+- `course_membership_permissions` (the **overrides**) are **runtime-owned**: created/edited
+  by admins through the panel.
+
+Two owners, two tables → no two-sources-of-truth, no drift.
+
+**Seeding rule (avoids the hardcoded-id trap):** seed `roles` and `permissions` first; seed
+`role_permissions` by **looking up each side by its natural key** (`roles.name`,
+`permissions.code`) to get the real id — never a hardcoded surrogate id (ids are
+insertion-order artifacts that differ across environments and test DBs).
+
+**Required constraints:** `unique(roles.name)` and `unique(permissions.code)` — they make the
+natural-key lookup sound *and* block duplicate vocabulary rows at runtime.
+
+**Rationale:** roles/permissions are a fixed vocabulary the code references by name (in
+`may()` and guards), changing rarely → migration-owned is correct and reproducible. Only
+per-user exceptions must change without a deploy → those are the overrides.
+
+**Implications:**
+- Tests (testcontainers) need the seed rows present — run the seed in a migration so a
+  fresh/test DB comes up with the vocabulary.
+- A new permission ships as: new guarded endpoint (code) **+** a migration adding the
+  `permissions` row and any `role_permissions` defaults — together.
+
+---
+
+## ADR-024: Authorization enforcement — `may()` + FastAPI dependency factory
+
+**Status:** Accepted (design) · implementation pending
+
+**Decision:** one resolver and one reusable route guard.
+
+`may(db, user, action, course_id) -> bool`:
+1. `if user.is_admin: return True` (ADR-020 short-circuit).
+2. load the `course_membership` for `(user, course_id)`; `None` → `False`.
+3. start from role defaults (`role_permissions` for that membership's role).
+4. apply overrides (`course_membership_permissions`): `grant=true` adds, `grant=false`
+   removes.
+5. `return action in effective_set`.
+
+**Route guard — dependency factory:** `require_permission(action: str)` returns an inner
+dependency taking `course_id` (from the path), `current_user` (`Depends(get_current_user)`,
+ADR-019), and `db`, raising **403** unless `may(...)`. The outer call bakes the action into a
+closure; the inner reads the course at request time. `require_admin` is the slice-1 special
+case: `Depends(get_current_user)` + raise 403 unless `is_admin`.
+
+**Status codes (aligns with ADR-019):**
+- unauthenticated (no/expired session) → **401**, already raised by `get_current_user`.
+- authenticated but not permitted → **403**, raised by the guard.
+
+**Open — 403 vs 404 existence-hiding:** for resources whose mere existence is sensitive, the
+guard may return **404** instead of 403 to avoid confirming existence. Per-resource decision;
+default 403; the factory takes an optional flag. Not decided per-endpoint yet.
+
+**Performance note:** `may()` hits the DB per call; listing N courses = N resolutions. When it
+bites, resolve once per request and cache on the request object — deferred, not a launch
+concern.
+
+---
+
+## ADR-025: Admin bootstrap — `is_admin` column + CLI seed
+
+**Status:** Accepted (mechanism) · implementation pending
+
+**Decision:**
+- `users.is_admin: bool`, `NOT NULL`, default `false` — the single global flag (ADR-020).
+- **Never** expose `is_admin` in `UserCreate`/`UserUpdate` (`api/schemas/user.py`) or any
+  request model — this closes the privilege-escalation hole (no self-promotion via the
+  create/update body). *(Verified 2026-06: neither schema carries it today.)*
+- The **first admin** is minted out-of-band by a **CLI command** (`create-admin <email>`)
+  that looks up (or creates) the user and sets `is_admin=true`. Re-runnable; the only
+  privileged path to admin.
+
+**Rationale:** registration must not set the flag; admin grants admin; the CLI breaks the
+chicken-and-egg and doubles as recovery / second-admin. Chosen over a hardcoded seed migration
+because (a) migrations describe schema, not specific people; (b) the CLI is re-runnable and
+has full app context (can hash a password). A seed migration may *additionally* exist for
+fresh-deploy convenience, but it must call the **same** logic the CLI uses, not duplicate it.
+
+**Open (deferred to deployment):**
+- Password source in a no-TTY container (interactive prompt vs. `ADMIN_PASSWORD` env read
+  once).
+- Docker invocation (`docker compose run --rm`) and startup ordering (migrations → app →
+  admin creation).
+- Idempotency: re-running must not duplicate the user or reset a changed password.
+
+---
+
+## ADR-026: Relational/ownership permissions — deferred
+
+**Status:** Open (deferred)
+
+**Decision:** Defer "instructor may remove/invite only instructors **they** added." This is
+**not** a flat `(role, permission)` capability — it depends on the *target* row's relationship
+to the actor (e.g. `course_memberships.assigned_by == actor.id`), so it cannot live in
+`role_permissions`/`course_membership_permissions`.
+
+**Future approach (when needed):** add an `assigned_by` column to `course_memberships` and
+handle these actions as an **ownership check inside `may()`** (or a sibling resolver) for the
+specific actions, layered on top of the flat capability check. Structurally orthogonal to
+ADR-022.
+
+**Why deferred:** the flat model covers all launch needs; the ownership rule adds real
+complexity for a narrow case.
+
+---
+
+## Vertical slice build plan (RBAC rollout)
+
+The ADRs above are decisions; these slices are shippable increments. Mapping is many-to-many.
+Build and test each slice before the next.
+
+**Slice 0 — foundation (done).** `get_current_user` implemented (ADR-019, `api/dependencies.py`);
+no escalation hole. Nothing to build.
+
+**Slice 1 — admin spine.** `users.is_admin` column + migration · `create-admin` CLI ·
+`require_admin` dependency · one guarded endpoint (e.g. `GET /admin/ping`).
+*Verify (pytest):* admin → 200, normal user → 403; `is_admin` absent from
+`UserCreate`/`UserUpdate`. *ADRs 020, 025; 024 (admin-short-circuit half).*
+
+**Slice 2 — RBAC data model + seed.** `roles`, `permissions`, `role_permissions`,
+`course_memberships(role_id)`, `course_membership_permissions` + migration · unique constraints
+(`roles.name`, `permissions.code`, the two pair-keys, `(user_id, course_id)`) · seed migration
+via natural-key lookups. *Verify:* fresh/test DB comes up with the vocabulary; seed is
+reproducible. *ADRs 021, 022, 023.*
+
+**Slice 3 — per-course enforcement.** `may()` resolver (merge, deny-wins) ·
+`require_permission(action)` factory · apply to the first real protected course endpoint.
+*Verify:* student blocked from write, instructor allowed, a `grant=false` override flips it.
+*ADRs 022, 024.*
+
+**Slice 4 — admin panel CRUD.** Screens over memberships + overrides (and a read-only
+role/permission catalog), each guarded by `require_admin`/`require_permission`. The panel is a
+consequence of the model, not new authorization logic. *ADRs 020–024.*
+
+**Deferred:** ownership rule (ADR-026); progress/enrollment host table after unification
+(ADR-021 open sub-question); 403-vs-404 per resource (ADR-024 open).
+
+---
+
 ## Open decisions backlog
 
 Consolidated list of things explicitly raised but not yet decided:
@@ -535,3 +775,10 @@ Consolidated list of things explicitly raised but not yet decided:
 6. `password_hash` hashing algorithm and column size (ADR-017).
 7. ~~Repository pattern vs. direct `Depends(get_session)` in FastAPI.~~ **Resolved (ADR-018):**
    pure-persistence async functions in the `database` package; caller owns the transaction.
+8. Progress/enrollment host table after the ADR-021 unification (where per-user
+   progress/completion/grades attach now that `enrollments` is gone) (ADR-021).
+9. 403 vs 404 existence-hiding, per sensitive resource (ADR-024).
+10. Relational/ownership permissions — "only instructors you added" — deferred (ADR-026).
+11. Admin-bootstrap deployment details: password source in a no-TTY container, Docker
+    invocation, startup ordering, idempotency (ADR-025).
+12. `may()` per-request permission caching, once read volume justifies it (ADR-024).
