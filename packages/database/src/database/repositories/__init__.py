@@ -5,9 +5,10 @@ from .session import (
     get_valid_session,
     touch_session,
 )
-from .user import create_user, get_user
+from .user import create_or_promote_admin, create_user, get_user
 
 __all__ = [
+    "create_or_promote_admin",
     "create_session",
     "create_user",
     "delete_session",

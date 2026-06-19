@@ -1,6 +1,7 @@
 import pytest
 from database.models.user import User
 from database.repositories.user import (
+    create_or_promote_admin,
     create_user,
     delete_user,
     get_user,
@@ -267,3 +268,88 @@ async def test_restore_revives_soft_deleted(session):
     revived = await get_user(session, User.id == user.id)
     assert revived is not None
     assert revived.deleted_at is None
+
+
+async def test_create_or_promote_admin_creates_new(session):
+    user, created = await create_or_promote_admin(
+        session,
+        email="root@example.com",
+        first_name="Root",
+        last_name="Admin",
+        password_hash="hashed",
+    )
+    assert created is True
+    assert user.id is not None  # flush() populated the PK
+    assert user.is_admin is True
+    assert user.password_hash == "hashed"
+
+
+async def test_create_or_promote_admin_promotes_existing(session):
+    existing = await create_user(
+        session,
+        UserCreateDb(
+            first_name="Ada",
+            last_name="Lovelace",
+            email="ada@example.com",
+            password_hash="original-hash",
+        ),
+    )
+    assert existing.is_admin is False
+
+    user, created = await create_or_promote_admin(
+        session,
+        email="ada@example.com",
+        # names/password are supplied but must be ignored for an existing user
+        first_name="Ignored",
+        last_name="Ignored",
+        password_hash="new-hash",
+    )
+
+    assert created is False
+    assert user.id == existing.id
+    assert user.is_admin is True
+    assert user.password_hash == "original-hash"  # promote never resets the password
+
+
+async def test_create_or_promote_admin_is_idempotent(session):
+    first, first_created = await create_or_promote_admin(
+        session,
+        email="root@example.com",
+        first_name="Root",
+        last_name="Admin",
+        password_hash="hashed",
+    )
+    # A bare re-run (no fields) promotes the same row, creating no duplicate.
+    second, second_created = await create_or_promote_admin(
+        session, email="root@example.com"
+    )
+
+    assert first_created is True
+    assert second_created is False
+    assert second.id == first.id
+    assert len(await list_users(session, User.email == "root@example.com")) == 1
+
+
+async def test_create_or_promote_admin_new_requires_all_fields(session):
+    with pytest.raises(ValueError) as exc:
+        await create_or_promote_admin(session, email="root@example.com")
+
+    message = str(exc.value)
+    assert "first_name" in message
+    assert "last_name" in message
+    assert "password_hash" in message
+
+
+async def test_create_or_promote_admin_new_partial_fields_reports_only_missing(session):
+    with pytest.raises(ValueError) as exc:
+        await create_or_promote_admin(
+            session,
+            email="root@example.com",
+            first_name="Root",
+            last_name="Admin",
+            # password_hash omitted
+        )
+
+    message = str(exc.value)
+    assert "password_hash" in message
+    assert "first_name" not in message

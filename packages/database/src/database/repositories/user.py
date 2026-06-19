@@ -15,6 +15,57 @@ async def create_user(session: AsyncSession, data: UserCreateDb) -> User:
     return user
 
 
+async def create_or_promote_admin(
+    session: AsyncSession,
+    *,
+    email: str,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    password_hash: str | None = None,
+) -> tuple[User, bool]:
+    """Ensure an admin exists for ``email`` (idempotent). Returns ``(user, created)``.
+
+    - Existing user -> set ``is_admin=True``, return ``created=False``. The password
+      is left untouched, so re-running never clobbers a password the admin changed.
+    - Missing user -> create with ``is_admin=True``, return ``created=True``. This
+      path requires ``first_name``, ``last_name`` and ``password_hash`` (raises
+      ``ValueError`` otherwise).
+
+    Pure persistence (ADR-018): the caller hashes the password and owns the
+    transaction (no commit here).
+    """
+    user = await get_user(session, User.email == email)
+    if user is not None:
+        user.is_admin = True
+        await session.flush()
+        return user, False
+
+    missing = [
+        field
+        for field, value in (
+            ("first_name", first_name),
+            ("last_name", last_name),
+            ("password_hash", password_hash),
+        )
+        if value is None
+    ]
+    if missing:
+        raise ValueError(f"creating a new admin requires: {', '.join(missing)}")
+    assert first_name is not None and last_name is not None
+    assert password_hash is not None
+
+    user = User(
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+        password_hash=password_hash,
+        is_admin=True,
+    )
+    session.add(user)
+    await session.flush()
+    return user, True
+
+
 async def get_user(
     session: AsyncSession, *criteria: ColumnExpressionArgument[bool]
 ) -> User | None:
@@ -30,8 +81,6 @@ async def list_users(
     limit: int = 100,
     offset: int = 0,
 ) -> Sequence[User]:
-    # Default to the PK so pagination has a stable sort; without any ordering
-    # LIMIT/OFFSET pages can overlap or skip rows across requests.
     if order_by is None:
         order_by = User.id
     statement = (

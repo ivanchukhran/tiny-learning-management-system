@@ -4,6 +4,8 @@ import secrets
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
+from core.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
+
 # Single reusable hasher; argon2-cffi's defaults follow the RFC 9106 / OWASP
 # guidance (argon2id). Tune memory_cost/time_cost/parallelism here if the
 # host's capacity planning ever requires it.
@@ -21,6 +23,20 @@ def verify_password(raw_password: str, password_hash: str) -> bool:
         return _hasher.verify(password_hash, raw_password)
     except VerifyMismatchError:
         return False
+
+
+def validate_password(password: str) -> None:
+    """Raise ``ValueError`` if the password length is outside the configured
+    bounds (``core.constants``). Length is the only password policy enforced.
+
+    Callers translate the error to their own surface: the API relies on Pydantic
+    ``Field`` bounds instead, while the CLI converts this to a ``SystemExit``.
+    """
+    if not (PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH):
+        raise ValueError(
+            f"password must be between {PASSWORD_MIN_LENGTH} and "
+            f"{PASSWORD_MAX_LENGTH} characters."
+        )
 
 
 def generate_session_token() -> str:
