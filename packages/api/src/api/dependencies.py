@@ -49,3 +49,11 @@ async def get_current_user(
         await db.commit()
 
     return session.user
+
+
+async def require_admin(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    if not current_user.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
